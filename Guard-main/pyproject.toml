@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "bigspeshl-guard"
+version = "0.1.0"
+description = "Autonomous DDOS detection and mitigation system"
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = [
+    "rich>=13.7.1",
+    "psutil>=5.9.8",
+]
+
+[project.scripts]
+bigspeshl-guard = "bigspeshl_guard.__main__:main"
+
+[tool.setuptools]
+packages = ["bigspeshl_guard"]

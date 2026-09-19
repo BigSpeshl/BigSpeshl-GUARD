@@ -1,0 +1,43 @@
+Metadata-Version: 2.4
+Name: bigspeshl-guard
+Version: 0.1.0
+Summary: Autonomous DDOS detection and mitigation system
+Requires-Python: >=3.9
+Description-Content-Type: text/markdown
+Requires-Dist: rich>=13.7.1
+Requires-Dist: psutil>=5.9.8
+
+# BigSpeshl-GUARD
+
+BigSpeshl-GUARD is an autonomous Python-based DDOS defense and network threat mitigation system. It is inspired by the design principles behind NetGuard-Pro but built as a lightweight, terminal-first tool focused on detection heuristics, auto-blocking, and live CLI monitoring.
+
+## Features
+
+- Real-time traffic event analysis
+- Adaptive detection for SYN flood, UDP reflection, and HTTP flood patterns
+- Automatic IP blocking and rate limiting
+- Rich terminal interface with a branded BigSpeshl-GUARD banner
+- Built-in simulation scenarios for testing defensive logic
+
+## Quick start
+
+Requires Python 3.9+.
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+python -m bigspeshl_guard --interactive
+```
+
+## Example commands
+
+```bash
+python -m bigspeshl_guard --mode syn_flood --duration 12
+python -m bigspeshl_guard --status
+python -m bigspeshl_guard --interactive
+```
+
+## Disclaimer
+
+This software is for authorized testing and educational use only. Do not deploy it against systems without explicit permission.
