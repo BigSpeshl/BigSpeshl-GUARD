@@ -137,7 +137,7 @@ BigSpeshl-GUARD использует **эвристический подход**
 Клонируйте репозиторий:
 
 ``` bash
-git clone <URL_РЕПОЗИТОРИЯ>
+git clone https://github.com/BigSpeshl/BigSpeshl-GUARD
 cd bigspeshl-guard
 ```
 
