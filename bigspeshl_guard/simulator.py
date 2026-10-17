@@ -1,9 +1,8 @@
 from __future__ import annotations
 
 import time
-from random import randint
 
-from .engine import GuardEngine, ThreatEvent, generate_synthetic_stream
+from .engine import GuardEngine, generate_synthetic_stream
 
 
 class TrafficSimulator:
@@ -18,7 +17,7 @@ class TrafficSimulator:
         alerts = []
         for event in events:
             result = self.engine.observe(event)
-            if result:
+            if result and "attack" in result:
                 alerts.append(result)
         return alerts
 

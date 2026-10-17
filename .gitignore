@@ -3,6 +3,8 @@ __pycache__/
 .venv/
 .env
 .pytest_cache/
+config.json
+config.json.*
 
 # Python package metadata
 *.egg-info/

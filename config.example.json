@@ -1,0 +1,35 @@
+{
+  "window_seconds": 10,
+  "interface": "enp1s0",
+  "attacks": {
+    "syn_flood": {
+      "threshold_requests": 300,
+      "block_seconds": 1200
+    },
+    "udp_reflection": {
+      "threshold_requests": 300,
+      "block_seconds": 1200
+    },
+    "http_flood": {
+      "threshold_requests": 300,
+      "block_seconds": 1200
+    }
+  },
+  "discord": {
+    "enabled": false,
+    "bot_token": "",
+    "channel_id": "",
+    "guild_id": ""
+  },
+  "firewall": {
+    "enabled": false,
+    "protected_networks": [
+      "127.0.0.0/8",
+      "::1/128",
+      "10.0.0.0/8",
+      "172.16.0.0/12",
+      "192.168.0.0/16",
+      "fc00::/7"
+    ]
+  }
+}

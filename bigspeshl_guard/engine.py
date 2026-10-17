@@ -2,10 +2,22 @@ from __future__ import annotations
 
 from collections import defaultdict, deque
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
-from random import randint, uniform
-from statistics import mean
+from datetime import datetime, timedelta, timezone
+from random import randint
 from typing import Deque, Dict, Iterable, List, Optional
+
+
+ATTACK_NAMES = {
+    "syn_flood": "SYN flood",
+    "udp_reflection": "UDP reflection",
+    "http_flood": "HTTP flood",
+}
+
+DEFAULT_ATTACK_POLICIES = {
+    "syn_flood": {"threshold_requests": 300, "block_seconds": 1200},
+    "udp_reflection": {"threshold_requests": 300, "block_seconds": 1200},
+    "http_flood": {"threshold_requests": 300, "block_seconds": 1200},
+}
 
 
 @dataclass
@@ -15,190 +27,221 @@ class ThreatEvent:
     protocol: str
     packets: int = 1
     port: Optional[int] = None
-    timestamp: datetime = field(default_factory=datetime.utcnow)
+    timestamp: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     metadata: Dict[str, object] = field(default_factory=dict)
 
 
 class GuardEngine:
-    def __init__(self, window_seconds: int = 10, warn_threshold: int = 25, block_threshold: int = 55) -> None:
+    def __init__(
+        self,
+        window_seconds: int = 10,
+        attack_policies: Optional[Dict[str, Dict[str, int]]] = None,
+    ) -> None:
+        if window_seconds <= 0:
+            raise ValueError("Окно анализа должно быть больше нуля.")
         self.window_seconds = window_seconds
-        self.warn_threshold = warn_threshold
-        self.block_threshold = block_threshold
-        self.events: Deque[ThreatEvent] = deque(maxlen=2000)
+        self.attack_policies = attack_policies or DEFAULT_ATTACK_POLICIES
+        self.events: Deque[ThreatEvent] = deque(maxlen=10000)
+        self._events_by_source: Dict[str, Deque[ThreatEvent]] = defaultdict(deque)
         self.blocklist: Dict[str, datetime] = {}
         self.alerts: List[dict] = []
-        self.ip_stats: Dict[str, dict] = defaultdict(
-            lambda: {
-                "count": 0,
-                "concurrent": 0,
-                "ports": set(),
-                "protocols": set(),
-                "last_seen": datetime.utcnow(),
-            }
-        )
+
+    def update_policy(
+        self,
+        window_seconds: int,
+        attack_policies: Dict[str, Dict[str, int]],
+    ) -> None:
+        if window_seconds <= 0:
+            raise ValueError("Окно анализа должно быть больше нуля.")
+        if set(attack_policies) != set(ATTACK_NAMES):
+            raise ValueError("Нужны политики для SYN flood, UDP reflection и HTTP flood.")
+        for name, policy in attack_policies.items():
+            if policy["threshold_requests"] <= 0 or policy["block_seconds"] <= 0:
+                raise ValueError(f"Порог и время блокировки для {name} должны быть больше нуля.")
+        self.window_seconds = window_seconds
+        self.attack_policies = attack_policies
 
     def _prune_blocklist(self) -> None:
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
         expired = [ip for ip, expiry in self.blocklist.items() if expiry <= now]
         for ip in expired:
             self.blocklist.pop(ip, None)
 
-    def _recent_events_for_ip(self, source_ip: str) -> List[ThreatEvent]:
-        cutoff = datetime.utcnow() - timedelta(seconds=self.window_seconds)
-        return [event for event in self.events if event.source_ip == source_ip and event.timestamp >= cutoff]
+    def _attack_type(self, event: ThreatEvent) -> Optional[str]:
+        if event.metadata.get("capture_only"):
+            return None
+        declared_type = event.metadata.get("attack_type")
+        if isinstance(declared_type, str) and declared_type in self.attack_policies:
+            return declared_type
+        protocol = event.protocol.lower()
+        if protocol in {"tcp", "syn"}:
+            return "syn_flood"
+        if protocol in {"udp", "icmp"}:
+            return "udp_reflection"
+        if protocol in {"http", "https"}:
+            return "http_flood"
+        return None
 
-    def _score_source(self, source_ip: str, event: ThreatEvent) -> tuple[int, List[str], Optional[str]]:
-        recent = self._recent_events_for_ip(source_ip)
-        stats = self.ip_stats[source_ip]
-        reasons: List[str] = []
-        score = 0
-
-        packet_volume = sum(item.packets for item in recent)
-        unique_ports = len({item.port for item in recent if item.port is not None})
-        unique_protocols = len({item.protocol for item in recent})
-
-        if packet_volume >= 120:
-            score += 25
-            reasons.append("sustained packet burst")
-        if unique_ports >= 10:
-            score += 18
-            reasons.append("wide port spread")
-        if unique_protocols >= 2:
-            score += 8
-            reasons.append("multi-protocol anomaly")
-
-        if event.protocol.lower() == "tcp" and packet_volume >= 60 and unique_ports >= 6:
-            score += 22
-            reasons.append("possible SYN flood")
-        if event.protocol.lower() in {"udp", "icmp"} and packet_volume >= 80:
-            score += 20
-            reasons.append("possible reflection flood")
-        if stats["concurrent"] >= 25:
-            score += 18
-            reasons.append("high concurrency")
-        if len(recent) >= 20:
-            score += 20
-            reasons.append("rapid repetition from one source")
-        if len(recent) >= 30 and sum(1 for item in recent if item.port and item.port <= 1024) >= 12:
-            score += 15
-            reasons.append("targeted service abuse")
-        if event.protocol.lower() == "tcp" and len(recent) >= 12 and sum(item.packets for item in recent) >= 300:
-            score += 18
-            reasons.append("connection saturation")
-
-        if score >= self.block_threshold:
-            attack = "DDoS-FLOOD"
-        elif score >= self.warn_threshold:
-            attack = "SUSPICIOUS"
-        else:
-            attack = None
-        return score, reasons, attack
+    def _recent_source_events(self, source_ip: str) -> List[ThreatEvent]:
+        cutoff = datetime.now(timezone.utc) - timedelta(seconds=self.window_seconds)
+        source_events = self._events_by_source[source_ip]
+        while source_events and source_events[0].timestamp < cutoff:
+            source_events.popleft()
+        return [event for event in source_events if event.timestamp >= cutoff]
 
     def observe(self, event: ThreatEvent) -> Optional[dict]:
         self._prune_blocklist()
+        if event.packets <= 0:
+            raise ValueError("Количество запросов должно быть больше нуля.")
 
         if event.source_ip in self.blocklist:
-            return {
-                "source_ip": event.source_ip,
-                "action": "blocked",
-                "status": "denied",
-            }
+            return {"source_ip": event.source_ip, "action": "blocked", "status": "denied"}
 
+        if len(self.events) == self.events.maxlen:
+            evicted = self.events[0]
+            evicted_source_events = self._events_by_source[evicted.source_ip]
+            if evicted_source_events and evicted_source_events[0] is evicted:
+                evicted_source_events.popleft()
+            if not evicted_source_events:
+                self._events_by_source.pop(evicted.source_ip, None)
         self.events.append(event)
-        stats = self.ip_stats[event.source_ip]
-        stats["count"] += event.packets
-        stats["last_seen"] = event.timestamp
-        stats["concurrent"] += 1
-        if event.port is not None:
-            stats["ports"].add(event.port)
-        stats["protocols"].add(event.protocol)
-
-        score, reasons, attack = self._score_source(event.source_ip, event)
-        if attack is None:
+        self._events_by_source[event.source_ip].append(event)
+        attack_type = self._attack_type(event)
+        if attack_type is None:
             return None
 
-        action = "watch"
-        if score >= self.block_threshold:
-            action = "block"
-            self.blocklist[event.source_ip] = datetime.utcnow() + timedelta(minutes=20)
-        elif score >= self.warn_threshold:
-            action = "rate-limit"
+        recent = self._recent_source_events(event.source_ip)
+        attack_events = [
+            item for item in recent if self._attack_type(item) == attack_type
+        ]
+        requests_in_window = sum(item.packets for item in attack_events)
+        policy = self.attack_policies[attack_type]
+        threshold = policy["threshold_requests"]
+        if requests_in_window < threshold:
+            return None
 
+        block_seconds = policy["block_seconds"]
+        self.blocklist[event.source_ip] = datetime.now(timezone.utc) + timedelta(seconds=block_seconds)
         alert = {
             "timestamp": event.timestamp.isoformat(timespec="seconds"),
             "source_ip": event.source_ip,
             "target_ip": event.target_ip,
-            "protocol": event.protocol,
-            "action": action,
-            "severity": "high" if action == "block" else "medium",
-            "score": score,
-            "attack": attack,
-            "reasons": reasons,
-            "packets": stats["count"],
+            "protocol": event.protocol.upper(),
+            "port": event.port,
+            "action": "block",
+            "severity": "high",
+            "attack": ATTACK_NAMES[attack_type],
+            "attack_type": attack_type,
+            "requests_in_window": requests_in_window,
+            "threshold_requests": threshold,
+            "window_seconds": self.window_seconds,
+            "block_seconds": block_seconds,
         }
         self.alerts.append(alert)
-
         return alert
+
+    def traffic_stats(self) -> List[dict]:
+        cutoff = datetime.now(timezone.utc) - timedelta(seconds=self.window_seconds)
+        by_ip: Dict[str, List[ThreatEvent]] = defaultdict(list)
+        for event in self.events:
+            if event.timestamp >= cutoff:
+                by_ip[event.source_ip].append(event)
+
+        rows = []
+        for source_ip, events in by_ip.items():
+            protocols: Dict[str, int] = defaultdict(int)
+            ports = set()
+            requests = 0
+            for event in events:
+                protocols[event.protocol.upper()] += event.packets
+                requests += event.packets
+                if event.port is not None:
+                    ports.add(event.port)
+            rows.append(
+                {
+                    "source_ip": source_ip,
+                    "requests": requests,
+                    "requests_per_second": requests / self.window_seconds,
+                    "protocols": protocols,
+                    "ports": sorted(ports),
+                    "blocked": source_ip in self.blocklist,
+                }
+            )
+        rows.sort(key=lambda row: (row["blocked"], row["requests"]), reverse=True)
+        return rows
 
     def recent_alerts(self, limit: int = 20) -> List[dict]:
         return list(reversed(self.alerts[-limit:]))
 
     def summary(self) -> dict:
         self._prune_blocklist()
-        active_sources = len({event.source_ip for event in self.events if datetime.utcnow() - event.timestamp <= timedelta(seconds=self.window_seconds)})
-        blocked = len(self.blocklist)
-        threat_count = len(self.recent_alerts(limit=50))
-        avg_targets = 0
-        if self.events:
-            by_target = defaultdict(int)
-            for event in self.events:
-                by_target[event.target_ip] += event.packets
-            avg_targets = round(mean(by_target.values()) if by_target else 0, 2)
+        traffic = self.traffic_stats()
+        active_sources = len(traffic)
+        total_requests = sum(row["requests"] for row in traffic)
         return {
             "active_sources": active_sources,
-            "blocked_sources": blocked,
-            "threat_count": threat_count,
-            "avg_target_load": avg_targets,
-            "load_factor": round((len(self.events) / max(1, len(self.blocklist) + 1)) * 100, 2),
+            "blocked_sources": len(self.blocklist),
+            "threat_count": len(self.alerts),
+            "total_requests": total_requests,
             "window_seconds": self.window_seconds,
         }
 
 
-def generate_attack_event(source_ip: str, target_ip: str, protocol: str, packets: int = 1, port: Optional[int] = None) -> ThreatEvent:
+def generate_attack_event(
+    source_ip: str,
+    target_ip: str,
+    protocol: str,
+    packets: int = 1,
+    port: Optional[int] = None,
+    attack_type: Optional[str] = None,
+) -> ThreatEvent:
+    metadata: Dict[str, object] = {"generated": True}
+    if attack_type:
+        metadata["attack_type"] = attack_type
     return ThreatEvent(
         source_ip=source_ip,
         target_ip=target_ip,
         protocol=protocol,
         packets=packets,
         port=port,
-        metadata={"generated": True},
+        metadata=metadata,
     )
 
 
 def generate_synthetic_stream(mode: str = "mixed") -> Iterable[ThreatEvent]:
     protocols = ["tcp", "udp", "icmp", "http"]
     if mode == "syn_flood":
-        attack_ip = f"10.0.0.{randint(2, 20)}"
-        for i in range(1, 30):
-            yield generate_attack_event(attack_ip, "192.168.1.10", "tcp", packets=randint(25, 50), port=80)
+        source_ip = f"10.0.0.{randint(2, 20)}"
+        for _ in range(30):
+            yield generate_attack_event(
+                source_ip, "192.168.1.10", "tcp", packets=randint(25, 50),
+                port=80, attack_type="syn_flood",
+            )
     elif mode == "udp_reflection":
-        attack_ip = f"198.51.100.{randint(1, 40)}"
-        for i in range(1, 25):
-            yield generate_attack_event(attack_ip, "192.168.1.10", "udp", packets=randint(25, 60), port=53)
+        source_ip = f"198.51.100.{randint(1, 40)}"
+        for _ in range(25):
+            yield generate_attack_event(
+                source_ip, "192.168.1.10", "udp", packets=randint(25, 60),
+                port=53, attack_type="udp_reflection",
+            )
     elif mode == "http_flood":
-        attack_ip = f"203.0.113.{randint(1, 255)}"
-        for i in range(1, 40):
-            yield generate_attack_event(attack_ip, "192.168.1.10", "http", packets=randint(5, 15), port=443)
+        source_ip = f"203.0.113.{randint(1, 255)}"
+        for _ in range(40):
+            yield generate_attack_event(
+                source_ip, "192.168.1.10", "http", packets=randint(5, 15),
+                port=443, attack_type="http_flood",
+            )
     else:
         for _ in range(30):
             protocol = protocols[randint(0, len(protocols) - 1)]
-            port = randint(20, 65535)
-            packets = randint(1, 12)
-            yield generate_attack_event(f"172.16.0.{randint(2, 99)}", "192.168.1.10", protocol, packets=packets, port=port)
+            yield generate_attack_event(
+                f"172.16.0.{randint(2, 99)}",
+                "192.168.1.10",
+                protocol,
+                packets=randint(1, 12),
+                port=randint(20, 65535),
+            )
 
 
 def simulate_mode(mode: str = "mixed", steps: int = 12) -> List[ThreatEvent]:
-    stream = list(generate_synthetic_stream(mode))
-    if len(stream) < steps:
-        return stream
-    return stream[:steps]
+    return list(generate_synthetic_stream(mode))[:steps]

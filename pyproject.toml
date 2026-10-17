@@ -11,6 +11,7 @@ requires-python = ">=3.9"
 dependencies = [
     "rich>=13.7.1",
     "psutil>=5.9.8",
+    "scapy>=2.5.0",
 ]
 
 [project.scripts]
