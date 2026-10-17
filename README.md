@@ -156,7 +156,11 @@ Python-зависимости проекта: `rich`, `psutil` и `scapy`. Дл�
 Клонируйте репозиторий:
 
 ``` bash
+<<<<<<< HEAD
 git clone https://github.com/BigSpeshl/BigSpeshl-GUARD/blob/main/README.md
+=======
+git clone https://github.com/BigSpeshl/BigSpeshl-GUARD
+>>>>>>> origin/main
 cd bigspeshl-guard
 ```
 
