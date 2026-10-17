@@ -1,2 +1,0 @@
-[console_scripts]
-bigspeshl-guard = bigspeshl_guard.__main__:main
